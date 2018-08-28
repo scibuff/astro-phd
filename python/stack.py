@@ -1,5 +1,9 @@
+import os
+n = os.system('clear')
+
 import math
 import numpy as np
+import scipy.ndimage as sciim
 import astropy.io.fits as pyfits
 from astropy.table import Column
 from astropy.stats import median_absolute_deviation as mad
@@ -32,33 +36,12 @@ def getImage( path, index=0 ):
 	image = hdu.data.astype('float32')
 	#image -= np.median(image)
 	return image
-	
+
 def getRefStars( image ):
 	stars = findStars( image )
 	list = stars[:numberOfStars() * 2]
 	list.keep_columns(['id','xcentroid','ycentroid','flux'])
 	return list
-	
-#folder = '/mnt/hgfs/data/lcogtdata-20170112-196/'
-#paths = [ folder + 'coj2m002-fs01-20161027-0133-e91.fits.fz',
-#	folder + 'coj2m002-fs01-20161027-0134-e91.fits.fz',
-#	folder + 'coj2m002-fs01-20161027-0135-e91.fits.fz']
-
-folder = '/mnt/hgfs/data/k12h02h/'
-paths = [ folder + '00000338.2012FU62.REDUCED.FIT',
-	folder + '00000339.2012FU62.REDUCED.FIT',
-	folder + '00000340.2012FU62.REDUCED.FIT']
-
-index = 0
-image = getImage( paths[0], index )
-ref = getRefStars( image )
-print(ref)
-
-image = getImage( paths[1], index )
-stars = findStars( image )
-stars = stars[:numberOfStars()]
-stars.keep_columns(['id','xcentroid','ycentroid','flux'])
-print(stars)
 
 def getStarDistance( star1, star2 ):
 	dx = star1['xcentroid'] - star2['xcentroid']
@@ -66,10 +49,10 @@ def getStarDistance( star1, star2 ):
 	return math.sqrt( dx**2 + dy**2 )
 
 # takes a star, a list of reference stars and a limit radius (optional) and finds the
-# reference star closes to the given star within that limit distance
+# reference star closest to the given star within that limit distance
 # returns a tuple ( min distance, the closest reference star )
 # the "closest reference star" will be None, if no ref. star is within the specified limit
-def matchRefStar( star, ref, limit = 10 ):
+def matchRefStar( star, ref, limit = 10, offsetX = 0, offsetY = 0 ):
 	dmin = 10 ** 6
 	dminstar = None
 	for refstar in ref:
@@ -83,7 +66,7 @@ def matchRefStar( star, ref, limit = 10 ):
 # takes an astropy.Table from DAOStarFinder stars and matches them against a table of reference stars
 # It adds columns called 'refid', 'd', 'dx', and 'dy', giving the reference star id, the total distances in px
 # and the distance in x and y (of the centroids)
-def matchRefStars( stars, ref ):
+def matchRefStars( stars, ref, limit = 10 ):
 	refid = []
 	dmins = []
 	dx = []
@@ -91,12 +74,12 @@ def matchRefStars( stars, ref ):
 	matched = stars.copy()
 	for star in matched:
 		# go thru the ref star list and find the closest match
-		dmin, dminstar = matchRefStar(star, ref)
+		dmin, dminstar = matchRefStar(star, ref, limit)
 		if ( dminstar is not None ):
 			refid.append( dminstar['id'] )
 			dmins.append( dmin )
 			dx.append( dminstar['xcentroid'] - star['xcentroid'] )
-			dy.append(dminstar['ycentroid'] - star['ycentroid'])
+			dy.append( dminstar['ycentroid'] - star['ycentroid'] )
 		else:
 			refid.append(np.NaN)
 			dmins.append(np.NaN)
@@ -116,31 +99,105 @@ def getDistanceAverage( ds ):
 	a = np.array( ds )
 	return np.average( np.ma.masked_array( a, np.isnan(a) ) )
 
-matched = matchRefStars( stars, ref )
-print(ref)
-print(stars)
-print(matched)
+#folder = '/mnt/hgfs/data/lcogtdata-20170112-196/'
+#paths = [ folder + 'coj2m002-fs01-20161027-0133-e91.fits.fz',
+#	folder + 'coj2m002-fs01-20161027-0134-e91.fits.fz',
+#	folder + 'coj2m002-fs01-20161027-0135-e91.fits.fz']
 
-######
+folder = '/mnt/hgfs/data/k12h02h/'
+paths = [ folder + '00000338.2012FU62.REDUCED.FIT',
+	folder + '00000364.CURSOR_POSITION.REDUCED.FIT']
+
+hduIndex = 0
+image = getImage( paths[0], hduIndex )
+ref = getRefStars( image )
+reg = []
+
+result = np.full( image.shape, 0, np.float32 )
+avgx = 0
+avgy = 0
 
 for path in paths:
-	# lgoct has index = 1
-	#index = 1
-	# h21 has index = 0
-	index = 0
-	image = getImage(path,index)
-	# H21 images are horizontally flipped
-	image = np.fliplr(image)
-	print( np.max(image) )
+	image = getImage( path, hduIndex )
+	stars = findStars( image )
+	stars = stars[:numberOfStars()]
+	stars.keep_columns(['id','xcentroid','ycentroid','flux'])
+	#limit = 10 + math.sqrt( avgx**2 + avgy**2 )
+	limit = 100
+	matched = matchRefStars( stars, ref, limit )
+	avgx = getDistanceAverage( matched['dx'] )
+	avgy = getDistanceAverage( matched['dy'] )
+	countNotNan = np.count_nonzero( ~np.isnan( matched['dx'] ) )
+	reg.append([path, avgx, avgy, countNotNan])
+	#
+	#shifted = sciim.interpolation.shift(image, [-avgx, -avgy], order=1)
+	#shifted = sciim.interpolation.shift(image, [0, 0], order=1)
+	result += image
+
+# flip the image back horizontally for H21
+# result = np.fliplr(result)
+result /= len(paths)
+
+outfile = '/mnt/hgfs/data/k12h02h/stack-%d.fits' % (len(paths))
+hdu = pyfits.PrimaryHDU(result)
+hdu.writeto(outfile, overwrite=True)
+
+print('path | avg(dx) | avg(dy) | count(non NaN)')
+print('\n'.join('{}: {}'.format(*k) for k in enumerate(reg)))
+
+#print(ref)
+#print(stars)
+#print(matched)
+#print(reg)
+######
+
+
+############################# angle functions ###########################
+#   Returns the unit vector of the vector.
+def unit_vector(vector):
+	return vector / np.linalg.norm(vector)
+
+#	Returns the angle in radians between vectors 'v1' and 'v2'::
+#   >>> angle_between((1, 0, 0), (0, 1, 0))
+#   1.5707963267948966
+#   >>> angle_between((1, 0, 0), (1, 0, 0))
+#   0.0
+#   >>> angle_between((1, 0, 0), (-1, 0, 0))
+#   3.141592653589793
+def angle_between(v1, v2):
+	v1_u = unit_vector(v1)
+	v2_u = unit_vector(v2)
+	return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
+
+#	Returns a 2d vector from (x1,y1) to (x2,y2)
+def make_vector( x1, y1, x2, y2 ):
+	return [(x2-x1), (y2-y1)]
+
+def make_star_vector( s1, s2 ):
+	return make_vector( s1['xcentroid'], s1['ycentroid'], s2['xcentroid'], s2['ycentroid'] )
+
+def getImageStarAngles( stars ):
+	angles = [0,0]
+	star0 = stars[0]
+	star1 = stars[1]
+	v1 = make_star_vector(star0, star1)
+	for i in range( 2, len(stars), 1 ):
+		star = stars[i]
+		v2 = make_star_vector( star0, star )
+		angle = angle_between( v1, v2 )
+		angles.append(angle)
+	return angles
+########################## angle functions end ###########################
+
+for path in paths:
+	image = getImage( path, hduIndex )
 	stars = findStars(image)
-	stars.sort('flux')
-	stars.reverse()
-	#list = stars[:numberOfStars()]
-	list = stars[:7]
-	print( list )
-	plotStars( path, image, list )
-	
-	
+	stars = stars[:numberOfStars()]
+	stars.keep_columns(['id', 'xcentroid', 'ycentroid', 'flux'])
+	angles = getImageStarAngles( stars )
+	stars['angles'] = Column( angles, description='Angles')
+	print(stars)
+
 ############################# debug functions #########################
 
 from photutils import aperture_photometry, CircularAperture
