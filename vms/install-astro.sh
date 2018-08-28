@@ -57,6 +57,10 @@ python3 -m pip install astropy --no-deps
 python3 -m pip install --user numpy scipy matplotlib
 python3 -m pip install --no-deps photutils
 
+python3 -m pip install pytest
+sudo apt-get -y install python3-tk
+python3 -m pip install image_registration
+
 # install iraf
 #wget ftp://iraf.noao.edu/iraf/v216/iraf.lnux.x86_64.tar.gzc
 #tar zxf iraf.lnux.x86_64.tar.gz
